@@ -14,6 +14,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { Briefcase, CheckCircle, Clock, DollarSign, Target, TrendingUp, MessageSquare } from 'lucide-react';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -36,94 +37,113 @@ export default function Dashboard() {
   const [showToast, setShowToast] = useState(false);
 
   useEffect(() => {
-    fetchStats();
+    const unsubscribeProjects = firestoreService.subscribe('projects', (projects) => {
+      calculateStats(projects, null, null, null);
+    });
+
+    const unsubscribeTasks = firestoreService.subscribe('tasks', (tasks) => {
+      calculateStats(null, tasks, null, null);
+    });
+
+    const unsubscribeExpenses = firestoreService.subscribe('expenses', (expenses) => {
+      calculateStats(null, null, expenses, null);
+    });
+
+    const currentMonth = format(new Date(), 'yyyy-MM');
+    const unsubscribeGoals = firestoreService.subscribe('goals', (goalsData) => {
+      const currentGoal = goalsData.find((g: any) => g.month === currentMonth);
+      setGoals(currentGoal || null);
+    });
+
     fetchRecentUpdates();
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeTasks();
+      unsubscribeExpenses();
+      unsubscribeGoals();
+    };
   }, []);
 
+  const [allData, setAllData] = useState<{projects: any[], tasks: any[], expenses: any[]}>({
+    projects: [],
+    tasks: [],
+    expenses: []
+  });
+
+  const calculateStats = (projects?: any, tasks?: any, expenses?: any, goalsData?: any) => {
+    const newData = {
+      projects: projects || allData.projects,
+      tasks: tasks || allData.tasks,
+      expenses: expenses || allData.expenses
+    };
+    setAllData(newData);
+
+    const currentMonth = format(new Date(), 'yyyy-MM');
+    const { projects: pList, tasks: tList, expenses: eList } = newData;
+
+    // Filter projects for current month
+    const currentMonthProjectsList = pList.filter((p: any) => p.date && p.date.startsWith(currentMonth));
+    const typeCountCurrentMonth = currentMonthProjectsList.reduce((acc: any, p: any) => {
+      acc[p.type] = (acc[p.type] || 0) + 1;
+      return acc;
+    }, {});
+    setCurrentMonthProjects(typeCountCurrentMonth);
+
+    // Calculate stats (Lifetime)
+    const fixedTotalRevenue = pList.filter((p: any) => p.category !== 'piecework').reduce((acc: number, p: any) => acc + Number(p.budget || 0), 0);
+    const pieceworkTotalRevenue = tList.filter((t: any) => t.project_category === 'piecework' && t.status === 'done').reduce((acc: number, t: any) => acc + (Number(t.project_item_price || 0) * Number(t.pieces_count || 1)), 0);
+    const totalRevenue = fixedTotalRevenue + pieceworkTotalRevenue;
+    const totalExpenses = eList.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
+
+    // Calculate Monthly Stats
+    const currentMonthExpensesList = eList.filter((e: any) => e.date && e.date.startsWith(currentMonth));
+    const fixedMonthlyRevenue = currentMonthProjectsList.filter((p: any) => p.category !== 'piecework').reduce((acc: number, p: any) => acc + Number(p.budget || 0), 0);
+    const pieceworkMonthlyRevenue = tList.filter((t: any) => t.project_category === 'piecework' && t.status === 'done' && t.due_date && t.due_date.startsWith(currentMonth)).reduce((acc: number, t: any) => acc + (Number(t.project_item_price || 0) * Number(t.pieces_count || 1)), 0);
+    const monthlyRevenue = fixedMonthlyRevenue + pieceworkMonthlyRevenue;
+    const monthlyExpenses = currentMonthExpensesList.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
+    
+    // Net Income = Monthly Revenue - Total Expenses (as requested)
+    const monthlyProfit = monthlyRevenue - totalExpenses;
+
+    setMonthlyStats({
+      revenue: monthlyRevenue,
+      profit: monthlyProfit,
+      expenses: monthlyExpenses
+    });
+
+    // Group projects by type (All time)
+    const typeCount = pList.reduce((acc: any, p: any) => {
+      acc[p.type] = (acc[p.type] || 0) + 1;
+      return acc;
+    }, {});
+
+    const typeData = Object.entries(typeCount).map(([name, value]) => ({
+      name: translateType(name),
+      value
+    }));
+
+    setStats({
+      projects: pList.length,
+      tasks: tList.length,
+      pendingTasks: tList.filter((t: any) => t.status !== 'done').length,
+      revenue: totalRevenue - totalExpenses,
+      totalExpenses: totalExpenses
+    });
+    setProjectTypes(typeData as any);
+  };
+
   const fetchRecentUpdates = async () => {
+    // Recent updates could be from a sub-collection of projects or a separate collection
+    // For now, let's just fetch from a 'updates' collection if it exists
     try {
-      const res = await fetch('/api/updates/recent');
-      if (res.ok) {
-        const data = await res.json();
-        setRecentUpdates(Array.isArray(data) ? data : []);
-      }
-    } catch (error) {
-      console.error('Failed to fetch recent updates');
-    }
+      const updates = await firestoreService.getAll('updates');
+      setRecentUpdates(updates.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 5));
+    } catch (e) {}
   };
 
   const fetchStats = async () => {
-    try {
-      const currentMonth = format(new Date(), 'yyyy-MM');
-      const [projectsRes, tasksRes, expensesRes, goalsRes] = await Promise.all([
-        fetch('/api/projects'),
-        fetch('/api/tasks'),
-        fetch('/api/expenses'),
-        fetch(`/api/goals/${currentMonth}`)
-      ]);
-
-      const projectsData = await projectsRes.json();
-      const projects = Array.isArray(projectsData) ? projectsData : [];
-      const tasksData = await tasksRes.json();
-      const tasks = Array.isArray(tasksData) ? tasksData : [];
-      const expensesData = await expensesRes.json();
-      const expenses = Array.isArray(expensesData) ? expensesData : [];
-      const goalsData = await goalsRes.json();
-
-      setGoals(goalsData);
-
-      // Filter projects for current month
-      const currentMonthProjectsList = projects.filter((p: any) => p.date && p.date.startsWith(currentMonth));
-      const typeCountCurrentMonth = currentMonthProjectsList.reduce((acc: any, p: any) => {
-        acc[p.type] = (acc[p.type] || 0) + 1;
-        return acc;
-      }, {});
-      setCurrentMonthProjects(typeCountCurrentMonth);
-
-      // Calculate stats (Lifetime)
-      const fixedTotalRevenue = projects.filter((p: any) => p.category !== 'piecework').reduce((acc: number, p: any) => acc + Number(p.budget || 0), 0);
-      const pieceworkTotalRevenue = tasks.filter((t: any) => t.project_category === 'piecework' && t.status === 'done').reduce((acc: number, t: any) => acc + (Number(t.project_item_price || 0) * Number(t.pieces_count || 1)), 0);
-      const totalRevenue = fixedTotalRevenue + pieceworkTotalRevenue;
-      const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
-
-      // Calculate Monthly Stats
-      const currentMonthExpensesList = expenses.filter((e: any) => e.date && e.date.startsWith(currentMonth));
-      const fixedMonthlyRevenue = currentMonthProjectsList.filter((p: any) => p.category !== 'piecework').reduce((acc: number, p: any) => acc + Number(p.budget || 0), 0);
-      const pieceworkMonthlyRevenue = tasks.filter((t: any) => t.project_category === 'piecework' && t.status === 'done' && t.due_date && t.due_date.startsWith(currentMonth)).reduce((acc: number, t: any) => acc + (Number(t.project_item_price || 0) * Number(t.pieces_count || 1)), 0);
-      const monthlyRevenue = fixedMonthlyRevenue + pieceworkMonthlyRevenue;
-      const monthlyExpenses = currentMonthExpensesList.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
-      
-      // Net Income = Monthly Revenue - Total Expenses (as requested)
-      const monthlyProfit = monthlyRevenue - totalExpenses;
-
-      setMonthlyStats({
-        revenue: monthlyRevenue,
-        profit: monthlyProfit,
-        expenses: monthlyExpenses
-      });
-
-      // Group projects by type (All time)
-      const typeCount = projects.reduce((acc: any, p: any) => {
-        acc[p.type] = (acc[p.type] || 0) + 1;
-        return acc;
-      }, {});
-
-      const typeData = Object.entries(typeCount).map(([name, value]) => ({
-        name: translateType(name),
-        value
-      }));
-
-      setStats({
-        projects: projects.length,
-        tasks: tasks.length,
-        pendingTasks: tasks.filter((t: any) => t.status !== 'done').length,
-        revenue: totalRevenue - totalExpenses,
-        totalExpenses: totalExpenses
-      });
-      setProjectTypes(typeData as any);
-    } catch (error) {
-      console.error('Failed to fetch stats', error);
-    }
+    // Handled by subscribe
   };
 
   const translateType = (type: string) => {
@@ -229,16 +249,28 @@ export default function Dashboard() {
               <button 
                 onClick={async () => {
                   try {
-                    await fetch('/api/goals', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        month: format(new Date(), 'yyyy-MM'),
+                    const currentMonth = format(new Date(), 'yyyy-MM');
+                    const existingGoal = goals || {};
+                    
+                    if (existingGoal.id) {
+                      await firestoreService.update('goals', existingGoal.id, {
                         actual_revenue: monthlyStats.revenue,
                         actual_profit: monthlyStats.profit,
                         actual_expenses: monthlyStats.expenses
-                      })
-                    });
+                      });
+                    } else {
+                      await firestoreService.add('goals', {
+                        month: currentMonth,
+                        actual_revenue: monthlyStats.revenue,
+                        actual_profit: monthlyStats.profit,
+                        actual_expenses: monthlyStats.expenses,
+                        revenue_target: 10000, // Default target
+                        target_wedding: 5,
+                        target_content: 5,
+                        target_commercial: 5,
+                        target_charity: 5
+                      });
+                    }
                     setShowToast(true);
                     setTimeout(() => setShowToast(false), 3000);
                   } catch (error) {

@@ -5,6 +5,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import Toast from '@/components/Toast';
 import { cn } from '@/lib/utils';
 import Avatar, { ICONS_MAP } from '@/components/Avatar';
+import { firestoreService } from '@/services/firestoreService';
 
 const AVATAR_COLORS = [
   'bg-indigo-100 text-indigo-600',
@@ -129,56 +130,38 @@ export default function Profile() {
 
   useEffect(() => {
     if (userId) {
-      fetchMemberData();
+      const unsubscribe = firestoreService.subscribe('team', (data) => {
+        const myProfile = data.find((m: any) => m.id === userId);
+        if (myProfile) {
+          setMember(myProfile);
+          setFormData({
+            password: myProfile.password || '',
+            description: myProfile.description || '',
+            avatar: myProfile.avatar || AVATAR_COLORS[0],
+            avatarIcon: myProfile.avatar_icon || ''
+          });
+        }
+        setIsLoading(false);
+      });
+      return () => unsubscribe();
     }
   }, [userId]);
-
-  const fetchMemberData = async () => {
-    setIsLoading(true);
-    try {
-      const res = await fetch(`/api/team/${userId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setMember(data);
-        setFormData({
-          password: data.password || '',
-          description: data.description || '',
-          avatar: data.avatar || AVATAR_COLORS[0],
-          avatarIcon: data.avatar_icon || ''
-        });
-      }
-    } catch (error) {
-      console.error('Error fetching profile:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!member) return;
 
     try {
-      const res = await fetch(`/api/team/${member.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...member,
-          password: formData.password,
-          description: formData.description,
-          avatar: formData.avatar,
-          avatar_icon: formData.avatarIcon
-        })
+      await firestoreService.update('team', member.id, {
+        ...member,
+        password: formData.password,
+        description: formData.description,
+        avatar: formData.avatar,
+        avatar_icon: formData.avatarIcon
       });
 
-      if (res.ok) {
-        setToast({ message: 'تم تحديث البيانات بنجاح', type: 'success' });
-        await refreshProfile(); // Update global context
-        fetchMemberData();
-      } else {
-        throw new Error('Update failed');
-      }
+      setToast({ message: 'تم تحديث البيانات بنجاح', type: 'success' });
+      await refreshProfile(); // Update global context
     } catch (error) {
       console.error('Error updating profile:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ البيانات', type: 'error' });
@@ -302,7 +285,17 @@ export default function Profile() {
               disabled
               className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-500 cursor-not-allowed"
             />
-            <p className="text-xs text-gray-400 mt-1">لا يمكن تعديل الاسم إلا من قبل الإدارة</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">البريد الإلكتروني (للقراءة فقط)</label>
+            <input 
+              type="email" 
+              value={member.email || 'غير مسجل'}
+              disabled
+              className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-500 cursor-not-allowed"
+            />
+            <p className="text-xs text-gray-400 mt-1">لا يمكن تعديل البيانات الأساسية إلا من قبل الإدارة</p>
           </div>
 
           <div>

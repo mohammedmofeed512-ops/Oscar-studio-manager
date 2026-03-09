@@ -6,15 +6,16 @@ import Toast from '@/components/Toast';
 import Avatar from '@/components/Avatar';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Trainees() {
   const { userId } = useAuth();
-  const [trainees, setTrainees] = useState([]);
-  const [evaluations, setEvaluations] = useState([]);
+  const [trainees, setTrainees] = useState<any[]>([]);
+  const [evaluations, setEvaluations] = useState<any[]>([]);
   const [viewMode, setViewMode] = useState<'list' | 'evaluations'>('list');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTrainee, setEditingTrainee] = useState<any>(null);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -49,20 +50,16 @@ export default function Trainees() {
     if (!rewardingTrainee) return;
 
     try {
-      const res = await fetch(`/api/team/${rewardingTrainee.id}/reward`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: rewardAmount })
+      const currentReward = Number(rewardingTrainee.reward || 0);
+      const newReward = currentReward + Number(rewardAmount);
+      
+      await firestoreService.update('team', rewardingTrainee.id, {
+        reward: newReward
       });
 
-      if (res.ok) {
-        setToast({ message: 'تم إضافة المكافأة بنجاح', type: 'success' });
-        setIsRewardModalOpen(false);
-        setRewardingTrainee(null);
-        fetchTrainees();
-      } else {
-        throw new Error('Failed to add reward');
-      }
+      setToast({ message: 'تم إضافة المكافأة بنجاح', type: 'success' });
+      setIsRewardModalOpen(false);
+      setRewardingTrainee(null);
     } catch (error) {
       console.error('Error adding reward:', error);
       setToast({ message: 'حدث خطأ أثناء إضافة المكافأة', type: 'error' });
@@ -80,28 +77,24 @@ export default function Trainees() {
   });
 
   useEffect(() => {
-    fetchTrainees();
+    const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+      const members = data.filter((m: any) => m.type && m.type.startsWith('trainee_'));
+      setTrainees(members);
+      setIsLoading(false);
+    });
+
+    const unsubscribeEvals = firestoreService.subscribe('trainee_evaluations', (data) => {
+      setEvaluations(data);
+    });
+
+    return () => {
+      unsubscribeTeam();
+      unsubscribeEvals();
+    };
   }, []);
 
   const fetchTrainees = async () => {
-    setIsLoading(true);
-    try {
-      const [teamRes, evalRes] = await Promise.all([
-        fetch('/api/team'),
-        fetch('/api/trainee-evaluations')
-      ]);
-      const data = await teamRes.json();
-      const evalData = await evalRes.json();
-
-      const members = (Array.isArray(data) ? data : []).filter((m: any) => m.type && m.type.startsWith('trainee_'));
-      setTrainees(members);
-      setEvaluations(Array.isArray(evalData) ? evalData : []);
-    } catch (error) {
-      console.error('Error fetching trainees:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe
   };
 
   const handleRefresh = async () => {
@@ -141,40 +134,26 @@ export default function Trainees() {
     e.preventDefault();
     
     try {
-      let res;
       if (editingTrainee) {
-        res = await fetch(`/api/team/${editingTrainee.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.update('team', editingTrainee.id, formData);
       } else {
-        res = await fetch('/api/team', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.add('team', formData);
       }
 
-      if (res.ok) {
-        setToast({ 
-          message: editingTrainee ? 'تم تحديث بيانات المتدرب بنجاح' : 'تم إضافة المتدرب بنجاح', 
-          type: 'success' 
-        });
-        setIsModalOpen(false);
-        setFormData({ name: '', role: '', phone: '', type: 'trainee_3', password: '', description: '', reward: '' });
-        setEditingTrainee(null);
-        fetchTrainees();
-      } else {
-        throw new Error('Operation failed');
-      }
+      setToast({ 
+        message: editingTrainee ? 'تم تحديث بيانات المتدرب بنجاح' : 'تم إضافة المتدرب بنجاح', 
+        type: 'success' 
+      });
+      setIsModalOpen(false);
+      setFormData({ name: '', role: '', phone: '', type: 'trainee_3', password: '', description: '', reward: '' });
+      setEditingTrainee(null);
     } catch (error) {
       console.error('Error saving trainee:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ البيانات', type: 'error' });
     }
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     setDeleteId(id);
     setIsDeleteModalOpen(true);
   };
@@ -182,13 +161,8 @@ export default function Trainees() {
   const confirmDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/team/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم حذف المتدرب بنجاح', type: 'success' });
-          fetchTrainees();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('team', deleteId);
+        setToast({ message: 'تم حذف المتدرب بنجاح', type: 'success' });
       } catch (error) {
         console.error('Error deleting trainee:', error);
         setToast({ message: 'حدث خطأ أثناء حذف المتدرب', type: 'error' });
@@ -216,18 +190,8 @@ export default function Trainees() {
     }
 
     try {
-      const res = await fetch(`/api/team/${trainee.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...trainee, type: nextType })
-      });
-
-      if (res.ok) {
-        setToast({ message: successMessage, type: 'success' });
-        fetchTrainees();
-      } else {
-        throw new Error('Promotion failed');
-      }
+      await firestoreService.update('team', trainee.id, { type: nextType });
+      setToast({ message: successMessage, type: 'success' });
     } catch (error) {
       console.error('Error promoting trainee:', error);
       setToast({ message: 'حدث خطأ أثناء ترقية المتدرب', type: 'error' });
@@ -254,24 +218,17 @@ export default function Trainees() {
     if (!evaluatingTrainee) return;
 
     try {
-      const res = await fetch('/api/trainee-evaluations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...evaluationData,
-          trainee_id: evaluatingTrainee.id,
-          evaluator_id: userId
-        })
+      await firestoreService.add('trainee_evaluations', {
+        ...evaluationData,
+        trainee_id: evaluatingTrainee.id,
+        trainee_name: evaluatingTrainee.name,
+        evaluator_id: userId,
+        created_at: new Date().toISOString()
       });
 
-      if (res.ok) {
-        setToast({ message: 'تم حفظ التقييم بنجاح', type: 'success' });
-        setIsEvaluationModalOpen(false);
-        setEvaluatingTrainee(null);
-        fetchTrainees();
-      } else {
-        throw new Error('Failed to save evaluation');
-      }
+      setToast({ message: 'تم حفظ التقييم بنجاح', type: 'success' });
+      setIsEvaluationModalOpen(false);
+      setEvaluatingTrainee(null);
     } catch (error) {
       console.error('Error saving evaluation:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ التقييم', type: 'error' });

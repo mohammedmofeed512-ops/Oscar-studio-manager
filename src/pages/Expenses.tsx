@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, Trash2, FileText, DollarSign, Calendar, ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { format } from 'date-fns';
-import { arSA } from 'date-fns/locale';
+import { Plus, Search, Filter, Trash2, FileText, Calendar, ArrowDownRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { firestoreService } from '@/services/firestoreService';
+import LoadingSpinner from '@/components/LoadingSpinner';
 
 export default function Expenses() {
   const [expenses, setExpenses] = useState<any[]>([]);
@@ -21,70 +21,52 @@ export default function Expenses() {
   });
 
   useEffect(() => {
-    fetchData();
+    const unsubscribeExpenses = firestoreService.subscribe('expenses', (data) => {
+      setExpenses(data);
+      setIsLoading(false);
+    });
+
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      setProjects(data);
+    });
+
+    return () => {
+      unsubscribeExpenses();
+      unsubscribeProjects();
+    };
   }, []);
 
   const fetchData = async () => {
-    try {
-      const [expensesRes, projectsRes] = await Promise.all([
-        fetch('/api/expenses'),
-        fetch('/api/projects')
-      ]);
-      
-      if (expensesRes.ok && projectsRes.ok) {
-        const expensesData = await expensesRes.json();
-        const projectsData = await projectsRes.json();
-        setExpenses(expensesData);
-        setProjects(projectsData);
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/expenses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          amount: parseFloat(formData.amount),
-          project_id: formData.project_id ? parseInt(formData.project_id) : null,
-          created_by: 'Admin' // Should be dynamic based on auth
-        })
+      await firestoreService.add('expenses', {
+        ...formData,
+        amount: parseFloat(formData.amount),
+        created_by: 'Admin' // Should be dynamic based on auth
       });
 
-      if (res.ok) {
-        setShowModal(false);
-        setFormData({
-          title: '',
-          amount: '',
-          category: 'general',
-          date: new Date().toISOString().split('T')[0],
-          project_id: ''
-        });
-        fetchData();
-      }
+      setShowModal(false);
+      setFormData({
+        title: '',
+        amount: '',
+        category: 'general',
+        date: new Date().toISOString().split('T')[0],
+        project_id: ''
+      });
     } catch (error) {
       console.error('Error saving expense:', error);
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!confirm('هل أنت متأكد من حذف هذا السجل؟')) return;
     
     try {
-      const res = await fetch(`/api/expenses/${id}`, {
-        method: 'DELETE'
-      });
-      
-      if (res.ok) {
-        fetchData();
-      }
+      await firestoreService.delete('expenses', id);
     } catch (error) {
       console.error('Error deleting expense:', error);
     }
@@ -96,6 +78,7 @@ export default function Expenses() {
     return matchesSearch && matchesCategory;
   });
 
+  if (isLoading) return <LoadingSpinner />;
   const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
 
   return (

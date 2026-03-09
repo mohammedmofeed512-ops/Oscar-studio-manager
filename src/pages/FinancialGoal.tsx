@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Save, Target, TrendingUp, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function FinancialGoal() {
   const [currentMonth, setCurrentMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [loading, setLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [goalId, setGoalId] = useState<string | null>(null);
   const [goals, setGoals] = useState({
     revenue_target: 0,
     target_wedding: 0,
@@ -26,11 +28,27 @@ export default function FinancialGoal() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`/api/stats/${currentMonth}`);
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
-      }
+      const [projects, tasks, expenses] = await Promise.all([
+        firestoreService.getAll('projects'),
+        firestoreService.getAll('tasks'),
+        firestoreService.getAll('expenses')
+      ]);
+
+      const currentMonthProjects = projects.filter((p: any) => p.date && p.date.startsWith(currentMonth));
+      const currentMonthExpenses = expenses.filter((e: any) => e.date && e.date.startsWith(currentMonth));
+      
+      const fixedRevenue = currentMonthProjects.filter((p: any) => p.category !== 'piecework').reduce((acc: number, p: any) => acc + Number(p.budget || 0), 0);
+      const pieceworkRevenue = tasks.filter((t: any) => t.project_category === 'piecework' && t.status === 'done' && t.due_date && t.due_date.startsWith(currentMonth)).reduce((acc: number, t: any) => acc + (Number(t.project_item_price || 0) * Number(t.pieces_count || 1)), 0);
+      
+      const revenue = fixedRevenue + pieceworkRevenue;
+      const monthlyExpenses = currentMonthExpenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
+      const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
+      
+      setStats({
+        revenue: revenue,
+        profit: revenue - totalExpenses,
+        expenses: monthlyExpenses
+      });
     } catch (error) {
       console.error('Failed to fetch stats');
     }
@@ -39,9 +57,11 @@ export default function FinancialGoal() {
   const fetchGoals = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/goals/${currentMonth}`);
-      const data = await res.json();
-      if (data.id) {
+      const goalsData = await firestoreService.getAll('goals');
+      const data = goalsData.find((g: any) => g.month === currentMonth) as any;
+      
+      if (data) {
+        setGoalId(data.id);
         setGoals({
           revenue_target: data.revenue_target || 0,
           target_wedding: data.target_wedding || 0,
@@ -50,7 +70,7 @@ export default function FinancialGoal() {
           target_charity: data.target_charity || 0
         });
       } else {
-        // Reset if no data found
+        setGoalId(null);
         setGoals({
           revenue_target: 0,
           target_wedding: 0,
@@ -70,24 +90,23 @@ export default function FinancialGoal() {
     e.preventDefault();
     setSaveStatus('saving');
     try {
-      const res = await fetch('/api/goals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          ...goals, 
-          month: currentMonth,
-          actual_revenue: stats.revenue,
-          actual_profit: stats.profit,
-          actual_expenses: stats.expenses
-        })
-      });
-      
-      if (res.ok) {
-        setSaveStatus('success');
-        setTimeout(() => setSaveStatus('idle'), 3000);
+      const data = { 
+        ...goals, 
+        month: currentMonth,
+        actual_revenue: stats.revenue,
+        actual_profit: stats.profit,
+        actual_expenses: stats.expenses
+      };
+
+      if (goalId) {
+        await firestoreService.update('goals', goalId, data);
       } else {
-        setSaveStatus('error');
+        await firestoreService.add('goals', data);
       }
+      
+      setSaveStatus('success');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+      fetchGoals();
     } catch (error) {
       console.error('Failed to save goals', error);
       setSaveStatus('error');

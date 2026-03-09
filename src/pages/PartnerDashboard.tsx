@@ -31,6 +31,7 @@ import ConfirmationModal from '@/components/ConfirmationModal';
 import { format, parseISO, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
+import { firestoreService } from '@/services/firestoreService';
 
 type Tab = 'strategies' | 'content' | 'ads' | 'reels' | 'info';
 
@@ -60,8 +61,27 @@ export default function PartnerDashboard() {
   const [editingItem, setEditingItem] = useState<any>(null);
 
   useEffect(() => {
-    fetchInitialData();
-  }, [userId]);
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      let filteredProjects = data;
+      if (role === 'partner') {
+        filteredProjects = data.filter((p: any) => p.partner_id === userId);
+      }
+      setProjects(filteredProjects);
+      if (filteredProjects.length > 0 && !selectedProject) {
+        setSelectedProject(filteredProjects[0]);
+      }
+      setIsLoading(false);
+    });
+
+    const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+      setTeam(data);
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeTeam();
+    };
+  }, [userId, role]);
 
   useEffect(() => {
     if (selectedProject) {
@@ -69,52 +89,22 @@ export default function PartnerDashboard() {
     }
   }, [selectedProject]);
 
-  const fetchInitialData = async () => {
-    setIsLoading(true);
-    try {
-      const [projectsRes, teamRes] = await Promise.all([
-        fetch('/api/projects'),
-        fetch('/api/team')
-      ]);
-      
-      const projectsData = await projectsRes.json();
-      const teamData = await teamRes.json();
-      setTeam(teamData);
-
-      // Filter projects based on role
-      let filteredProjects = projectsData;
-      if (role === 'partner') {
-        filteredProjects = projectsData.filter((p: any) => p.partner_id === userId);
-      }
-      
-      setProjects(filteredProjects);
-      if (filteredProjects.length > 0) {
-        setSelectedProject(filteredProjects[0]);
-      }
-    } catch (error) {
-      console.error('Error fetching initial data:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const fetchProjectData = async () => {
     if (!selectedProject) return;
     try {
-      const [tasksRes, strategiesRes, adsRes, reelsRes, itemsRes] = await Promise.all([
-        fetch('/api/tasks'),
-        fetch(`/api/projects/${selectedProject.id}/marketing-strategies`),
-        fetch(`/api/projects/${selectedProject.id}/sponsored-ads`),
-        fetch(`/api/projects/${selectedProject.id}/reels-schedule`),
-        fetch(`/api/projects/${selectedProject.id}/items`)
+      const [tasksData, strategiesData, adsData, reelsData, itemsData] = await Promise.all([
+        firestoreService.getAll('tasks'),
+        firestoreService.getSubAll('projects', selectedProject.id, 'marketing-strategies'),
+        firestoreService.getSubAll('projects', selectedProject.id, 'sponsored-ads'),
+        firestoreService.getSubAll('projects', selectedProject.id, 'reels-schedule'),
+        firestoreService.getSubAll('projects', selectedProject.id, 'items')
       ]);
 
-      const allTasks = await tasksRes.json();
-      setTasks(allTasks.filter((t: any) => t.project_id === selectedProject.id));
-      setStrategies(await strategiesRes.json());
-      setAds(await adsRes.json());
-      setReels(await reelsRes.json());
-      setProjectItems(await itemsRes.json());
+      setTasks(tasksData.filter((t: any) => t.project_id === selectedProject.id));
+      setStrategies(strategiesData);
+      setAds(adsData);
+      setReels(reelsData);
+      setProjectItems(itemsData);
     } catch (error) {
       console.error('Error fetching project data:', error);
     }
@@ -123,105 +113,75 @@ export default function PartnerDashboard() {
   const handleSaveInfo = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch(`/api/projects/${selectedProject.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(selectedProject)
-      });
-      if (res.ok) {
-        setToast({ message: 'تم حفظ المعلومات بنجاح', type: 'success' });
-      }
+      await firestoreService.update('projects', selectedProject.id, selectedProject);
+      setToast({ message: 'تم حفظ المعلومات بنجاح', type: 'success' });
     } catch (error) {
       setToast({ message: 'حدث خطأ أثناء الحفظ', type: 'error' });
     }
   };
 
   const handleAddItem = async (data: any) => {
-    let url = '';
-    let method = 'POST';
-    
-    if (editingItem) {
-      method = 'PUT';
-      if (modalType === 'task') url = `/api/tasks/${editingItem.id}`;
-      if (modalType === 'reels') url = `/api/reels-schedule/${editingItem.id}`;
-      if (modalType === 'ads') url = `/api/sponsored-ads/${editingItem.id}`;
-      if (modalType === 'strategies') url = `/api/marketing-strategies/${editingItem.id}`;
-    } else {
-      if (modalType === 'strategies') url = `/api/projects/${selectedProject.id}/marketing-strategies`;
-      if (modalType === 'ads') url = `/api/projects/${selectedProject.id}/sponsored-ads`;
-      if (modalType === 'reels') url = `/api/projects/${selectedProject.id}/reels-schedule`;
-      if (modalType === 'task') url = `/api/tasks`;
-    }
-
-    if (!url) return;
-
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          ...data, 
-          project_id: selectedProject.id,
-          pieces_count: data.pieces_count ? parseInt(data.pieces_count as string) : 1,
-          project_item_id: data.project_item_id || null
-        })
-      });
-      if (res.ok) {
-        setToast({ message: editingItem ? 'تم التحديث بنجاح' : 'تمت الإضافة بنجاح', type: 'success' });
-        setIsModalOpen(false);
-        setEditingItem(null);
-        fetchProjectData();
+      const payload = { 
+        ...data, 
+        project_id: selectedProject.id,
+        pieces_count: data.pieces_count ? parseInt(data.pieces_count as string) : 1,
+        project_item_id: data.project_item_id || null,
+        created_at: editingItem?.created_at || new Date().toISOString()
+      };
+
+      if (editingItem) {
+        if (modalType === 'task') await firestoreService.update('tasks', editingItem.id, payload);
+        if (modalType === 'reels') await firestoreService.updateSub('projects', selectedProject.id, 'reels-schedule', editingItem.id, payload);
+        if (modalType === 'ads') await firestoreService.updateSub('projects', selectedProject.id, 'sponsored-ads', editingItem.id, payload);
+        if (modalType === 'strategies') await firestoreService.updateSub('projects', selectedProject.id, 'marketing-strategies', editingItem.id, payload);
+      } else {
+        if (modalType === 'task') await firestoreService.add('tasks', payload);
+        if (modalType === 'reels') await firestoreService.addSub('projects', selectedProject.id, 'reels-schedule', payload);
+        if (modalType === 'ads') await firestoreService.addSub('projects', selectedProject.id, 'sponsored-ads', payload);
+        if (modalType === 'strategies') await firestoreService.addSub('projects', selectedProject.id, 'marketing-strategies', payload);
       }
+
+      setToast({ message: editingItem ? 'تم التحديث بنجاح' : 'تمت الإضافة بنجاح', type: 'success' });
+      setIsModalOpen(false);
+      setEditingItem(null);
+      fetchProjectData();
     } catch (error) {
       setToast({ message: 'حدث خطأ أثناء العملية', type: 'error' });
     }
   };
 
-  const handleApproval = async (type: 'task' | 'reel' | 'ad', id: number, approval: string) => {
-    let url = '';
+  const handleApproval = async (type: 'task' | 'reel' | 'ad', id: string, approval: string) => {
     let item = null;
 
-    if (type === 'task') {
-      url = `/api/tasks/${id}`;
-      item = tasks.find(t => t.id === id);
-    } else if (type === 'reel') {
-      url = `/api/reels-schedule/${id}`;
-      item = reels.find(r => r.id === id);
-    } else if (type === 'ad') {
-      url = `/api/sponsored-ads/${id}`;
-      item = ads.find(a => a.id === id);
-    }
-    
-    if (!item) return;
-
     try {
-      const res = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...item, client_approval: approval })
-      });
-      if (res.ok) {
-        setToast({ message: 'تم تحديث حالة الموافقة', type: 'success' });
-        fetchProjectData();
+      if (type === 'task') {
+        item = tasks.find(t => t.id === id);
+        if (item) await firestoreService.update('tasks', id, { ...item, client_approval: approval });
+      } else if (type === 'reel') {
+        item = reels.find(r => r.id === id);
+        if (item) await firestoreService.updateSub('projects', selectedProject.id, 'reels-schedule', id, { ...item, client_approval: approval });
+      } else if (type === 'ad') {
+        item = ads.find(a => a.id === id);
+        if (item) await firestoreService.updateSub('projects', selectedProject.id, 'sponsored-ads', id, { ...item, client_approval: approval });
       }
+      
+      setToast({ message: 'تم تحديث حالة الموافقة', type: 'success' });
+      fetchProjectData();
     } catch (error) {
       setToast({ message: 'حدث خطأ أثناء التحديث', type: 'error' });
     }
   };
 
-  const handleDeleteItem = async (type: Tab, id: number) => {
-    let url = '';
-    if (type === 'strategies') url = `/api/marketing-strategies/${id}`;
-    if (type === 'ads') url = `/api/sponsored-ads/${id}`;
-    if (type === 'reels') url = `/api/reels-schedule/${id}`;
-    if (type === 'content') url = `/api/tasks/${id}`;
-
+  const handleDeleteItem = async (type: Tab, id: string) => {
     try {
-      const res = await fetch(url, { method: 'DELETE' });
-      if (res.ok) {
-        setToast({ message: 'تم الحذف بنجاح', type: 'success' });
-        fetchProjectData();
-      }
+      if (type === 'strategies') await firestoreService.deleteSub('projects', selectedProject.id, 'marketing-strategies', id);
+      if (type === 'ads') await firestoreService.deleteSub('projects', selectedProject.id, 'sponsored-ads', id);
+      if (type === 'reels') await firestoreService.deleteSub('projects', selectedProject.id, 'reels-schedule', id);
+      if (type === 'content') await firestoreService.delete('tasks', id);
+
+      setToast({ message: 'تم الحذف بنجاح', type: 'success' });
+      fetchProjectData();
     } catch (error) {
       setToast({ message: 'حدث خطأ أثناء الحذف', type: 'error' });
     }
@@ -263,7 +223,7 @@ export default function PartnerDashboard() {
           <select 
             className="flex-1 md:w-64 border border-gray-200 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50"
             value={selectedProject?.id || ''}
-            onChange={(e) => setSelectedProject(projects.find(p => p.id === parseInt(e.target.value)))}
+            onChange={(e) => setSelectedProject(projects.find(p => p.id === e.target.value))}
           >
             {projects.map(p => (
               <option key={p.id} value={p.id}>{p.title}</option>
@@ -328,7 +288,7 @@ export default function PartnerDashboard() {
                   <select 
                     className="w-full border border-gray-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
                     value={selectedProject.account_manager_id || ''}
-                    onChange={e => setSelectedProject({...selectedProject, account_manager_id: parseInt(e.target.value)})}
+                    onChange={e => setSelectedProject({...selectedProject, account_manager_id: e.target.value})}
                   >
                     <option value="">اختر المشرف...</option>
                     {team.map(m => (
@@ -684,7 +644,7 @@ export default function PartnerDashboard() {
               const formData = new FormData(e.currentTarget);
               const data = Object.fromEntries(formData.entries());
               if (modalType === 'task') {
-                data.participating_trainees = formData.getAll('participating_trainees').map(Number) as any;
+                data.participating_trainees = JSON.stringify(formData.getAll('participating_trainees'));
               }
               handleAddItem(data);
             }} className="p-6 space-y-4 overflow-y-auto">

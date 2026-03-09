@@ -4,14 +4,15 @@ import { useNavigate } from 'react-router-dom';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Toast from '@/components/Toast';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Partners() {
   const navigate = useNavigate();
-  const [partners, setPartners] = useState([]);
+  const [partners, setPartners] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPartner, setEditingPartner] = useState<any>(null);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -23,20 +24,16 @@ export default function Partners() {
   });
 
   useEffect(() => {
-    fetchData();
+    const unsubscribe = firestoreService.subscribe('team', (data) => {
+      setPartners(data.filter((m: any) => m.type === 'partner'));
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
-      setPartners((Array.isArray(data) ? data : []).filter((m: any) => m.type === 'partner'));
-    } catch (error) {
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -49,24 +46,16 @@ export default function Partners() {
         contract_type: 'contract'
       };
 
-      const url = editingPartner ? `/api/team/${editingPartner.id}` : '/api/team';
-      const method = editingPartner ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        setToast({ message: editingPartner ? 'تم التحديث بنجاح' : 'تمت الإضافة بنجاح', type: 'success' });
-        setIsModalOpen(false);
-        setFormData({ name: '', phone: '', password: '', description: '' });
-        setEditingPartner(null);
-        fetchData();
+      if (editingPartner) {
+        await firestoreService.update('team', editingPartner.id, payload);
       } else {
-        throw new Error('Operation failed');
+        await firestoreService.add('team', payload);
       }
+
+      setToast({ message: editingPartner ? 'تم التحديث بنجاح' : 'تمت الإضافة بنجاح', type: 'success' });
+      setIsModalOpen(false);
+      setFormData({ name: '', phone: '', password: '', description: '' });
+      setEditingPartner(null);
     } catch (error) {
       setToast({ message: 'حدث خطأ أثناء حفظ البيانات', type: 'error' });
     }
@@ -75,13 +64,8 @@ export default function Partners() {
   const handleDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/team/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم الحذف بنجاح', type: 'success' });
-          fetchData();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('team', deleteId);
+        setToast({ message: 'تم الحذف بنجاح', type: 'success' });
       } catch (error) {
         setToast({ message: 'حدث خطأ أثناء الحذف', type: 'error' });
       }

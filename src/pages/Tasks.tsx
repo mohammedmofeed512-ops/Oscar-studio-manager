@@ -5,15 +5,16 @@ import { useAuth } from '@/context/AuthContext';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Toast from '@/components/Toast';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Tasks() {
   const { user } = useAuth();
-  const [tasks, setTasks] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [team, setTeam] = useState([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [team, setTeam] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [filterProject, setFilterProject] = useState('all');
   const [filterAssignee, setFilterAssignee] = useState('all');
@@ -33,50 +34,61 @@ export default function Tasks() {
     service_price: '',
     pieces_count: 1,
     project_item_id: '',
-    participating_trainees: [] as number[]
+    participating_trainees: [] as any[]
   });
 
   useEffect(() => {
-    fetchData();
+    const unsubscribeTasks = firestoreService.subscribe('tasks', (data) => {
+      setTasks(data);
+      setIsLoading(false);
+    });
+
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      setProjects(data);
+    });
+
+    const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+      setTeam(data);
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeProjects();
+      unsubscribeTeam();
+    };
   }, []);
+
+  const fetchProjectsAndTeam = async () => {
+    // Handled by subscribe
+  };
 
   useEffect(() => {
     if (newTask.project_id) {
-      fetch(`/api/projects/${newTask.project_id}/items`)
-        .then(res => res.json())
-        .then(data => setProjectItems(Array.isArray(data) ? data : []));
+      // If project is in Firestore, we'd use firestoreService.getSubAll
+      // For now, check if project_id is a Firestore ID (string) or SQLite ID (number)
+      const isFirestoreId = isNaN(Number(newTask.project_id));
+      if (isFirestoreId) {
+        firestoreService.getSubAll('projects', newTask.project_id, 'items')
+          .then(data => setProjectItems(data));
+      } else {
+        fetch(`/api/projects/${newTask.project_id}/items`)
+          .then(res => res.json())
+          .then(data => setProjectItems(Array.isArray(data) ? data : []));
+      }
     } else {
       setProjectItems([]);
     }
   }, [newTask.project_id]);
 
   const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      const [tasksRes, projectsRes, teamRes] = await Promise.all([
-        fetch('/api/tasks'),
-        fetch('/api/projects'),
-        fetch('/api/team')
-      ]);
-      const tasksData = await tasksRes.json();
-      const projectsData = await projectsRes.json();
-      const teamData = await teamRes.json();
-      setTasks(Array.isArray(tasksData) ? tasksData : []);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-      setTeam(Array.isArray(teamData) ? teamData : []);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe and fetchProjectsAndTeam
   };
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await fetchData();
+    await fetchProjectsAndTeam();
     setIsRefreshing(false);
   };
 
@@ -87,7 +99,7 @@ export default function Tasks() {
     return matchesProject && matchesAssignee && matchesStatus;
   });
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     setDeleteId(id);
     setIsDeleteModalOpen(true);
   };
@@ -95,13 +107,8 @@ export default function Tasks() {
   const confirmDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/tasks/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم حذف المهمة بنجاح', type: 'success' });
-          fetchData();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('tasks', deleteId);
+        setToast({ message: 'تم حذف المهمة بنجاح', type: 'success' });
       } catch (error) {
         console.error('Error deleting task:', error);
         setToast({ message: 'حدث خطأ أثناء حذف المهمة', type: 'error' });
@@ -115,33 +122,25 @@ export default function Tasks() {
     e.preventDefault();
     
     try {
-      let res;
+      const taskData = {
+        ...newTask,
+        participating_trainees: JSON.stringify(newTask.participating_trainees),
+        status: newTask.status || 'todo'
+      };
+
       if (editId) {
-        res = await fetch(`/api/tasks/${editId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newTask)
-        });
+        await firestoreService.update('tasks', editId, taskData);
       } else {
-        res = await fetch('/api/tasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...newTask, created_by: user })
-        });
+        await firestoreService.add('tasks', { ...taskData, created_by: user });
       }
 
-      if (res.ok) {
-        setToast({ 
-          message: editId ? 'تم تحديث المهمة بنجاح' : 'تم إضافة المهمة بنجاح', 
-          type: 'success' 
-        });
-        setIsModalOpen(false);
-        setNewTask({ title: '', project_id: '', assigned_to: '', supervisor_id: '', priority: 'medium', due_date: '', description: '', service_name: '', service_price: '', pieces_count: 1, project_item_id: '', participating_trainees: [] });
-        setEditId(null);
-        fetchData();
-      } else {
-        throw new Error('Operation failed');
-      }
+      setToast({ 
+        message: editId ? 'تم تحديث المهمة بنجاح' : 'تم إضافة المهمة بنجاح', 
+        type: 'success' 
+      });
+      setIsModalOpen(false);
+      setNewTask({ title: '', project_id: '', assigned_to: '', supervisor_id: '', priority: 'medium', due_date: '', description: '', service_name: '', service_price: '', pieces_count: 1, project_item_id: '', participating_trainees: [] });
+      setEditId(null);
     } catch (error) {
       console.error('Error saving task:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ المهمة', type: 'error' });
@@ -206,21 +205,8 @@ export default function Tasks() {
     else if (task.status === 'failed') newStatus = 'deferred';
     else if (task.status === 'deferred') newStatus = 'todo';
     
-    // Optimistic update
-    setTasks(tasks.map((t: any) => t.id === task.id ? { ...t, status: newStatus } : t));
-
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...task, status: newStatus })
-      });
-
-      if (!res.ok) {
-        // Revert on failure
-        setTasks(tasks.map((t: any) => t.id === task.id ? { ...t, status: task.status } : t));
-        throw new Error('Status update failed');
-      }
+      await firestoreService.update('tasks', task.id, { status: newStatus });
     } catch (error) {
       console.error('Error updating status:', error);
       setToast({ message: 'حدث خطأ أثناء تحديث الحالة', type: 'error' });

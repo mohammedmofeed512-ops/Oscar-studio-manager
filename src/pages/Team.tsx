@@ -7,21 +7,20 @@ import Avatar from '@/components/Avatar';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Team() {
   const { userId } = useAuth();
-  const [team, setTeam] = useState([]);
-  const [stats, setStats] = useState([]);
-  const [evaluations, setEvaluations] = useState([]);
+  const [team, setTeam] = useState<any[]>([]);
+  const [stats, setStats] = useState<any[]>([]);
+  const [evaluations, setEvaluations] = useState<any[]>([]);
   const [viewMode, setViewMode] = useState<'list' | 'performance' | 'evaluations'>('list');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<any>(null);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  
-  // Evaluation State
   const [isEvaluationModalOpen, setIsEvaluationModalOpen] = useState(false);
   const [evaluatingMember, setEvaluatingMember] = useState<any>(null);
   const [evaluationData, setEvaluationData] = useState({
@@ -37,6 +36,7 @@ export default function Team() {
 
   const [formData, setFormData] = useState({
     name: '',
+    email: '',
     role: '',
     phone: '',
     type: 'member',
@@ -46,46 +46,68 @@ export default function Team() {
     piece_price: '',
     services: [] as { name: string; price: string }[],
     password: '',
-    reward: ''
+    reward: '',
+    description: ''
   });
 
   useEffect(() => {
-    fetchData();
+    let teamData: any[] = [];
+    let tasksData: any[] = [];
+    let projectsData: any[] = [];
+
+    const updateStats = () => {
+      const members = teamData.filter((m: any) => m.type === 'member');
+      setTeam(members);
+      
+      const calculatedStats = members.map((m: any) => {
+        const memberTasks = tasksData.filter((t: any) => t.assigned_to?.toString() === m.id.toString());
+        const memberProjects = projectsData.filter((p: any) => 
+          memberTasks.some((t: any) => t.project_id?.toString() === p.id.toString())
+        );
+        
+        return {
+          ...m,
+          total_tasks: memberTasks.length,
+          completed_tasks: memberTasks.filter((t: any) => t.status === 'done').length,
+          projects_count: memberProjects.length
+        };
+      });
+      setStats(calculatedStats);
+      setIsLoading(false);
+    };
+
+    const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+      teamData = data;
+      updateStats();
+    });
+
+    const unsubscribeTasks = firestoreService.subscribe('tasks', (data) => {
+      tasksData = data;
+      updateStats();
+    });
+
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      projectsData = data;
+      updateStats();
+    });
+
+    fetchEvaluations();
+
+    return () => {
+      unsubscribeTeam();
+      unsubscribeTasks();
+      unsubscribeProjects();
+    };
   }, []);
 
-  const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      await Promise.all([fetchTeam(), fetchStats(), fetchEvaluations()]);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const fetchTeam = async () => {
-    const res = await fetch('/api/team');
-    const data = await res.json();
-    const members = (Array.isArray(data) ? data : []).filter((m: any) => m.type === 'member');
-    setTeam(members);
-  };
-
   const fetchStats = async () => {
-    const res = await fetch('/api/team-stats');
-    const data = await res.json();
-    setStats(Array.isArray(data) ? data.filter((s: any) => s.type === 'member') : []);
+    // Handled by subscribe
   };
 
   const fetchEvaluations = async () => {
     try {
-      const res = await fetch('/api/evaluations');
-      const data = await res.json();
-      const evals = Array.isArray(data) ? data : [];
-      // We need to filter by employee type, but the API doesn't return employee type.
-      // We can filter using the team state since we already fetched it.
-      setEvaluations(evals);
+      const data = await firestoreService.getAll('evaluations');
+      setEvaluations(data);
     } catch (error) {
       console.error('Error fetching evaluations:', error);
     }
@@ -104,6 +126,7 @@ export default function Team() {
       }
       setFormData({
         name: member.name,
+        email: member.email || '',
         role: member.role,
         phone: member.phone,
         type: member.type || 'member',
@@ -117,7 +140,7 @@ export default function Team() {
       });
     } else {
       setEditingMember(null);
-      setFormData({ name: '', role: '', phone: '', type: 'member', contract_type: 'piecework', salary: '', piece_name: '', piece_price: '', services: [], password: '', reward: '' });
+      setFormData({ name: '', email: '', role: '', phone: '', type: 'member', contract_type: 'piecework', salary: '', piece_name: '', piece_price: '', services: [], password: '', reward: '' });
     }
     setIsModalOpen(true);
   };
@@ -126,33 +149,24 @@ export default function Team() {
     e.preventDefault();
     
     try {
-      let res;
+      const data = {
+        ...formData,
+        services: JSON.stringify(formData.services)
+      };
+
       if (editingMember) {
-        res = await fetch(`/api/team/${editingMember.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.update('team', editingMember.id, data);
       } else {
-        res = await fetch('/api/team', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.add('team', data);
       }
 
-      if (res.ok) {
-        setToast({ 
-          message: editingMember ? 'تم تحديث بيانات العضو بنجاح' : 'تم إضافة العضو بنجاح', 
-          type: 'success' 
-        });
-        setIsModalOpen(false);
-        setFormData({ name: '', role: '', phone: '', type: 'member', contract_type: 'piecework', salary: '', piece_name: '', piece_price: '', services: [], password: '', reward: '' });
-        setEditingMember(null);
-        fetchData();
-      } else {
-        throw new Error('Operation failed');
-      }
+      setToast({ 
+        message: editingMember ? 'تم تحديث بيانات العضو بنجاح' : 'تم إضافة العضو بنجاح', 
+        type: 'success' 
+      });
+      setIsModalOpen(false);
+      setFormData({ name: '', email: '', role: '', phone: '', type: 'member', contract_type: 'piecework', salary: '', piece_name: '', piece_price: '', services: [], password: '', reward: '', description: '' });
+      setEditingMember(null);
     } catch (error) {
       console.error('Error saving member:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ البيانات', type: 'error' });
@@ -179,29 +193,23 @@ export default function Team() {
     if (!evaluatingMember) return;
 
     try {
-      const res = await fetch('/api/evaluations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...evaluationData,
-          employee_id: evaluatingMember.id,
-          evaluator_id: userId
-        })
+      await firestoreService.add('evaluations', {
+        ...evaluationData,
+        employee_id: evaluatingMember.id,
+        employee_name: evaluatingMember.name,
+        evaluator_id: userId
       });
 
-      if (res.ok) {
-        setToast({ message: 'تم حفظ التقييم بنجاح', type: 'success' });
-        setIsEvaluationModalOpen(false);
-      } else {
-        throw new Error('Failed to save evaluation');
-      }
+      setToast({ message: 'تم حفظ التقييم بنجاح', type: 'success' });
+      setIsEvaluationModalOpen(false);
+      fetchEvaluations();
     } catch (error) {
       console.error('Error saving evaluation:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ التقييم', type: 'error' });
     }
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     setDeleteId(id);
     setIsDeleteModalOpen(true);
   };
@@ -209,13 +217,8 @@ export default function Team() {
   const confirmDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/team/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم حذف العضو بنجاح', type: 'success' });
-          fetchData();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('team', deleteId);
+        setToast({ message: 'تم حذف العضو بنجاح', type: 'success' });
       } catch (error) {
         console.error('Error deleting member:', error);
         setToast({ message: 'حدث خطأ أثناء حذف العضو', type: 'error' });
@@ -225,15 +228,7 @@ export default function Team() {
     }
   };
 
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await fetchData();
-    setIsRefreshing(false);
-  };
-
-  if (isLoading && !isRefreshing) return <LoadingSpinner />;
+  if (isLoading) return <LoadingSpinner />;
 
   return (
     <div className="space-y-6">
@@ -270,14 +265,6 @@ export default function Team() {
               <Star className="w-5 h-5" />
             </button>
           </div>
-          <button 
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-gray-100 rounded-lg transition-all disabled:opacity-50"
-            title="تحديث القائمة"
-          >
-            <RefreshCw className={cn("w-5 h-5", isRefreshing && "animate-spin")} />
-          </button>
           <button 
             onClick={() => handleOpenModal()}
             className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
@@ -622,6 +609,16 @@ export default function Team() {
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 outline-none"
                   value={formData.name}
                   onChange={e => setFormData({...formData, name: e.target.value})}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">البريد الإلكتروني (لتسجيل الدخول)</label>
+                <input 
+                  type="email" 
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={formData.email}
+                  onChange={e => setFormData({...formData, email: e.target.value})}
+                  placeholder="example@studio.com"
                 />
               </div>
               <div>

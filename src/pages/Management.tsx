@@ -7,21 +7,23 @@ import Avatar from '@/components/Avatar';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Management() {
   const { userId } = useAuth();
-  const [team, setTeam] = useState([]);
+  const [team, setTeam] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<any>(null);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
+    email: '',
     role: '',
     phone: '',
     type: 'admin',
@@ -33,22 +35,17 @@ export default function Management() {
   });
 
   useEffect(() => {
-    fetchData();
+    const unsubscribe = firestoreService.subscribe('team', (data) => {
+      const admins = data.filter((m: any) => m.type === 'admin');
+      setTeam(admins);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
-      const admins = (Array.isArray(data) ? data : []).filter((m: any) => m.type === 'admin');
-      setTeam(admins);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل البيانات', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe
   };
 
   const handleRefresh = async () => {
@@ -62,6 +59,7 @@ export default function Management() {
       setEditingMember(member);
       setFormData({
         name: member.name,
+        email: member.email || '',
         role: member.role,
         phone: member.phone,
         type: 'admin',
@@ -73,7 +71,7 @@ export default function Management() {
       });
     } else {
       setEditingMember(null);
-      setFormData({ name: '', role: '', phone: '', type: 'admin', contract_type: 'contract', salary: '', piece_name: '', piece_price: '', password: '' });
+      setFormData({ name: '', email: '', role: '', phone: '', type: 'admin', contract_type: 'contract', salary: '', piece_name: '', piece_price: '', password: '' });
     }
     setIsModalOpen(true);
   };
@@ -81,40 +79,26 @@ export default function Management() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      let res;
       if (editingMember) {
-        res = await fetch(`/api/team/${editingMember.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.update('team', editingMember.id, formData);
       } else {
-        res = await fetch('/api/team', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+        await firestoreService.add('team', formData);
       }
 
-      if (res.ok) {
-        setToast({ 
-          message: editingMember ? 'تم تحديث بيانات المدير بنجاح' : 'تم إضافة المدير بنجاح', 
-          type: 'success' 
-        });
-        setIsModalOpen(false);
-        setFormData({ name: '', role: '', phone: '', type: 'admin', contract_type: 'piecework', salary: '', piece_name: '', piece_price: '', password: '' });
-        setEditingMember(null);
-        fetchData();
-      } else {
-        throw new Error('Operation failed');
-      }
+      setToast({ 
+        message: editingMember ? 'تم تحديث بيانات المدير بنجاح' : 'تم إضافة المدير بنجاح', 
+        type: 'success' 
+      });
+      setIsModalOpen(false);
+      setFormData({ name: '', email: '', role: '', phone: '', type: 'admin', contract_type: 'contract', salary: '', piece_name: '', piece_price: '', password: '' });
+      setEditingMember(null);
     } catch (error) {
       console.error('Error saving member:', error);
       setToast({ message: 'حدث خطأ أثناء حفظ البيانات', type: 'error' });
     }
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     setDeleteId(id);
     setIsDeleteModalOpen(true);
   };
@@ -122,13 +106,8 @@ export default function Management() {
   const confirmDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/team/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم حذف المدير بنجاح', type: 'success' });
-          fetchData();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('team', deleteId);
+        setToast({ message: 'تم حذف المدير بنجاح', type: 'success' });
       } catch (error) {
         console.error('Error deleting member:', error);
         setToast({ message: 'حدث خطأ أثناء حذف العضو', type: 'error' });
@@ -241,6 +220,16 @@ export default function Management() {
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-purple-500"
                   value={formData.name}
                   onChange={e => setFormData({...formData, name: e.target.value})}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">البريد الإلكتروني (لتسجيل الدخول)</label>
+                <input 
+                  type="email" 
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-purple-500"
+                  value={formData.email}
+                  onChange={e => setFormData({...formData, email: e.target.value})}
+                  placeholder="example@studio.com"
                 />
               </div>
               <div>

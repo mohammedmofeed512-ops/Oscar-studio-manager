@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth, MANAGERS } from '../context/AuthContext';
-import { UserCircle, Users, GraduationCap, Handshake } from 'lucide-react';
+import { UserCircle, Users, GraduationCap, Handshake, Mail, Lock } from 'lucide-react';
+import { auth } from '../firebase';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Login() {
   const { login } = useAuth();
+  const [loginMethod, setLoginMethod] = useState<'dropdown' | 'email'>('dropdown');
+  const [email, setEmail] = useState('');
   const [loginType, setLoginType] = useState<'admin' | 'team' | 'trainee' | 'partner'>('admin');
   const [selectedManager, setSelectedManager] = useState('');
   const [selectedTeamMember, setSelectedTeamMember] = useState('');
@@ -18,25 +23,24 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/team')
-      .then(res => res.json())
-      .then(data => {
-        const adminList = data.filter((m: any) => m.type === 'admin');
-        const memberList = data.filter((m: any) => m.type === 'member');
-        const traineeList = data.filter((m: any) => m.type && m.type.startsWith('trainee_'));
-        const partnerList = data.filter((m: any) => m.type === 'partner');
-        
-        setAdmins(adminList);
-        setTeamMembers(memberList);
-        setTrainees(traineeList);
-        setPartners(partnerList);
+    const unsubscribe = firestoreService.subscribe('team', (data) => {
+      const adminList = data.filter((m: any) => m.type === 'admin');
+      const memberList = data.filter((m: any) => m.type === 'member');
+      const traineeList = data.filter((m: any) => m.type && m.type.startsWith('trainee_'));
+      const partnerList = data.filter((m: any) => m.type === 'partner');
+      
+      setAdmins(adminList);
+      setTeamMembers(memberList);
+      setTrainees(traineeList);
+      setPartners(partnerList);
 
-        if (adminList.length > 0) setSelectedManager(adminList[0].name);
-        if (memberList.length > 0) setSelectedTeamMember(memberList[0].id);
-        if (traineeList.length > 0) setSelectedTrainee(traineeList[0].id);
-        if (partnerList.length > 0) setSelectedPartner(partnerList[0].id);
-      })
-      .catch(err => console.error('Error fetching team:', err));
+      if (adminList.length > 0) setSelectedManager(adminList[0].name);
+      if (memberList.length > 0) setSelectedTeamMember(memberList[0].id);
+      if (traineeList.length > 0) setSelectedTrainee(traineeList[0].id);
+      if (partnerList.length > 0) setSelectedPartner(partnerList[0].id);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,6 +49,30 @@ export default function Login() {
     setIsLoading(true);
 
     try {
+      if (loginMethod === 'email') {
+        try {
+          const userCredential = await signInWithEmailAndPassword(auth, email, password);
+          const fUser = userCredential.user;
+          
+          // Find team member with this email
+          const teamData = await firestoreService.getAll('team');
+          const member = teamData.find((m: any) => m.email === fUser.email) as any;
+          
+          if (member) {
+            login(member.name, member.type === 'admin' ? 'admin' : 'team', member.id);
+          } else {
+            // Default to admin if not found in team list (for the initial setup)
+            login(fUser.email?.split('@')[0] || 'User', 'admin', fUser.uid);
+          }
+          return;
+        } catch (err: any) {
+          console.error('Firebase login error:', err);
+          setError('خطأ في البريد الإلكتروني أو كلمة المرور');
+          setIsLoading(false);
+          return;
+        }
+      }
+
       if (loginType === 'admin' && !selectedManager) {
         setError('يرجى اختيار مدير');
         setIsLoading(false);
@@ -66,41 +94,32 @@ export default function Login() {
         return;
       }
 
-      let payload;
+      let user: any = null;
       if (loginType === 'admin') {
-        payload = { username: selectedManager, password, type: 'admin' };
+        // Check hardcoded managers first
+        const hardcoded = MANAGERS.find(m => m === selectedManager);
+        if (hardcoded && password === '123456') { // Default password for hardcoded managers
+          user = { name: hardcoded, id: hardcoded, type: 'admin' };
+        } else {
+          // Check Firestore admins
+          user = admins.find(m => m.name === selectedManager && m.password === password);
+        }
       } else if (loginType === 'team') {
-        payload = { id: selectedTeamMember, password, type: 'team' };
+        user = teamMembers.find(m => m.id === selectedTeamMember && m.password === password);
       } else if (loginType === 'partner') {
-        payload = { id: selectedPartner, password, type: 'partner' };
+        user = partners.find(m => m.id === selectedPartner && m.password === password);
       } else {
-        payload = { id: selectedTrainee, password, type: 'trainee' };
+        user = trainees.find(m => m.id === selectedTrainee && m.password === password);
       }
 
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        if (loginType === 'admin') {
-          login(data.user.name, 'admin', data.user.id);
-        } else if (loginType === 'team') {
-          login(data.user.name, 'team', data.user.id);
-        } else if (loginType === 'partner') {
-          login(data.user.name, 'partner', data.user.id);
-        } else {
-          login(data.user.name, 'trainee', data.user.id);
-        }
+      if (user) {
+        login(user.name, loginType, user.id);
       } else {
-        setError(data.error || 'فشل تسجيل الدخول');
+        setError('خطأ في كلمة المرور');
       }
     } catch (err) {
       console.error('Login error:', err);
-      setError('حدث خطأ أثناء الاتصال بالخادم');
+      setError('حدث خطأ أثناء تسجيل الدخول');
     } finally {
       setIsLoading(false);
     }
@@ -128,141 +147,180 @@ export default function Login() {
           </p>
         </div>
 
-        {/* Tabs */}
-        <div className="flex p-1 bg-gray-100 rounded-lg mb-6">
-          <button
-            onClick={() => setLoginType('admin')}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-              loginType === 'admin' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+        {/* Login Method Toggle */}
+        <div className="flex justify-center mb-6">
+          <button 
+            onClick={() => setLoginMethod('dropdown')}
+            className={`px-4 py-2 text-sm font-medium rounded-l-lg border ${loginMethod === 'dropdown' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700'}`}
           >
-            الإدارة
+            القائمة
           </button>
-          <button
-            onClick={() => setLoginType('team')}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-              loginType === 'team' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+          <button 
+            onClick={() => setLoginMethod('email')}
+            className={`px-4 py-2 text-sm font-medium rounded-r-lg border ${loginMethod === 'email' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700'}`}
           >
-            الفريق
-          </button>
-          <button
-            onClick={() => setLoginType('trainee')}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-              loginType === 'trainee' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            متدرب
-          </button>
-          <button
-            onClick={() => setLoginType('partner')}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-              loginType === 'partner' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            شريك
+            البريد الإلكتروني
           </button>
         </div>
 
+        {/* Tabs */}
+        {loginMethod === 'dropdown' && (
+          <div className="flex p-1 bg-gray-100 rounded-lg mb-6">
+            <button
+              onClick={() => setLoginType('admin')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
+                loginType === 'admin' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              الإدارة
+            </button>
+            <button
+              onClick={() => setLoginType('team')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
+                loginType === 'team' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              الفريق
+            </button>
+            <button
+              onClick={() => setLoginType('trainee')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
+                loginType === 'trainee' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              متدرب
+            </button>
+            <button
+              onClick={() => setLoginType('partner')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
+                loginType === 'partner' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              شريك
+            </button>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-6">
-          {loginType === 'admin' ? (
+          {loginMethod === 'email' ? (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                اسم المدير
+                البريد الإلكتروني
               </label>
-              <select
-                value={selectedManager}
-                onChange={(e) => setSelectedManager(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-              >
-                {admins.length > 0 ? (
-                  admins.map((admin) => (
-                    <option key={admin.id} value={admin.name}>
-                      {admin.name}
-                    </option>
-                  ))
-                ) : (
-                  MANAGERS.map((manager) => (
-                    <option key={manager} value={manager}>
-                      {manager}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
-          ) : loginType === 'team' ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                اسم العضو
-              </label>
-              <select
-                value={selectedTeamMember}
-                onChange={(e) => setSelectedTeamMember(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-              >
-                {teamMembers.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : loginType === 'partner' ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                اسم الشريك
-              </label>
-              <select
-                value={selectedPartner}
-                onChange={(e) => setSelectedPartner(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-              >
-                {partners.map((partner) => (
-                  <option key={partner.id} value={partner.id}>
-                    {partner.name}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="example@studio.com"
+                  required
+                />
+              </div>
             </div>
           ) : (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                اسم المتدرب
-              </label>
-              <select
-                value={selectedTrainee}
-                onChange={(e) => setSelectedTrainee(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-              >
-                {trainees.map((trainee) => (
-                  <option key={trainee.id} value={trainee.id}>
-                    {trainee.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <>
+              {loginType === 'admin' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    اسم المدير
+                  </label>
+                  <select
+                    value={selectedManager}
+                    onChange={(e) => setSelectedManager(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  >
+                    {admins.map((admin) => (
+                      <option key={admin.id} value={admin.name}>
+                        {admin.name}
+                      </option>
+                    ))}
+                    {MANAGERS.map((manager) => (
+                      <option key={manager} value={manager}>
+                        {manager}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : loginType === 'team' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    اسم العضو
+                  </label>
+                  <select
+                    value={selectedTeamMember}
+                    onChange={(e) => setSelectedTeamMember(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  >
+                    {teamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : loginType === 'partner' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    اسم الشريك
+                  </label>
+                  <select
+                    value={selectedPartner}
+                    onChange={(e) => setSelectedPartner(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  >
+                    {partners.map((partner) => (
+                      <option key={partner.id} value={partner.id}>
+                        {partner.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    اسم المتدرب
+                  </label>
+                  <select
+                    value={selectedTrainee}
+                    onChange={(e) => setSelectedTrainee(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  >
+                    {trainees.map((trainee) => (
+                      <option key={trainee.id} value={trainee.id}>
+                        {trainee.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </>
           )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               كلمة المرور
             </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="أدخل كلمة المرور"
-              required
-            />
+            <div className="relative">
+              <Lock className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="أدخل كلمة المرور"
+                required
+              />
+            </div>
           </div>
 
           {error && (

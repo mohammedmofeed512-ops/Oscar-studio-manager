@@ -2,14 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, TrendingDown, TrendingUp, UserCheck, Edit, RefreshCw } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmationModal from '@/components/ConfirmationModal';
+import { firestoreService } from '@/services/firestoreService';
+import LoadingSpinner from '@/components/LoadingSpinner';
 
 export default function Finance() {
   const { user } = useAuth();
-  const [expenses, setExpenses] = useState([]);
-  const [projects, setProjects] = useState([]);
+  const [expenses, setExpenses] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     title: '',
@@ -20,66 +22,54 @@ export default function Finance() {
   });
 
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSalariesModalOpen, setIsSalariesModalOpen] = useState(false);
   const [salaryMonth, setSalaryMonth] = useState(new Date().toISOString().slice(0, 7));
   const [isRecordingSalaries, setIsRecordingSalaries] = useState(false);
 
   useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      const [expensesRes, projectsRes] = await Promise.all([
-        fetch('/api/expenses'),
-        fetch('/api/projects')
-      ]);
-      const expensesData = await expensesRes.json();
-      const projectsData = await projectsRes.json();
-      setExpenses(Array.isArray(expensesData) ? expensesData : []);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
+    const unsubscribeExpenses = firestoreService.subscribe('expenses', (data) => {
+      setExpenses(data);
       setIsLoading(false);
-    }
-  };
+    });
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await fetchData();
-    setIsRefreshing(false);
-  };
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      setProjects(data);
+    });
+
+    return () => {
+      unsubscribeExpenses();
+      unsubscribeProjects();
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (editId) {
-      await fetch(`/api/expenses/${editId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newExpense)
-      });
-    } else {
-      await fetch('/api/expenses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newExpense, created_by: user })
-      });
-    }
+    try {
+      const data = {
+        ...newExpense,
+        amount: parseFloat(newExpense.amount),
+        created_by: user
+      };
 
-    setIsModalOpen(false);
-    setNewExpense({ title: '', amount: '', category: 'equipment', date: '', project_id: '' });
-    setEditId(null);
-    fetchData();
+      if (editId) {
+        await firestoreService.update('expenses', editId, data);
+      } else {
+        await firestoreService.add('expenses', data);
+      }
+
+      setIsModalOpen(false);
+      setNewExpense({ title: '', amount: '', category: 'equipment', date: '', project_id: '' });
+      setEditId(null);
+    } catch (error) {
+      console.error('Error saving expense:', error);
+    }
   };
 
   const handleEdit = (expense: any) => {
     setNewExpense({
       title: expense.title,
-      amount: expense.amount,
+      amount: expense.amount.toString(),
       category: expense.category,
       date: expense.date,
       project_id: expense.project_id || ''
@@ -88,16 +78,20 @@ export default function Finance() {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     setDeleteId(id);
     setIsDeleteModalOpen(true);
   };
 
   const confirmDelete = async () => {
     if (deleteId) {
-      await fetch(`/api/expenses/${deleteId}`, { method: 'DELETE' });
-      fetchData();
-      setDeleteId(null);
+      try {
+        await firestoreService.delete('expenses', deleteId);
+      } catch (error) {
+        console.error('Error deleting expense:', error);
+      } finally {
+        setDeleteId(null);
+      }
     }
   };
 
@@ -105,19 +99,51 @@ export default function Finance() {
     e.preventDefault();
     setIsRecordingSalaries(true);
     try {
-      const res = await fetch('/api/expenses/record-salaries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month: salaryMonth, created_by: user })
-      });
-      const data = await res.json();
-      if (data.success) {
-        alert(`تم صرف الرواتب بنجاح. إجمالي الرواتب: ${data.total} شيكل لـ ${data.count} موظف.`);
-        setIsSalariesModalOpen(false);
-        fetchData();
-      } else {
-        alert('حدث خطأ أثناء صرف الرواتب');
+      // Fetch team members
+      const team = await firestoreService.getAll('team');
+      
+      let total = 0;
+      let count = 0;
+
+      for (const member of team as any[]) {
+        let salary = 0;
+        if (member.contract_type === 'contract') {
+          salary = Number(member.salary || 0);
+        } else if (member.contract_type === 'piecework') {
+          // For piecework, we'd need to fetch completed tasks for this month
+          // This is a bit more complex, let's just use a placeholder or skip for now
+          // Or we can fetch tasks
+          const tasks = await firestoreService.getAll('tasks');
+          const memberTasks = tasks.filter((t: any) => 
+            t.status === 'done' && 
+            t.due_date && t.due_date.startsWith(salaryMonth) &&
+            t.participating_trainees && t.participating_trainees.includes(member.name)
+          );
+          
+          salary = memberTasks.reduce((acc: number, t: any) => {
+            // Calculate share
+            const traineesCount = JSON.parse(t.participating_trainees || '[]').length || 1;
+            const itemPrice = Number(t.project_item_price || 0);
+            const piecesCount = Number(t.pieces_count || 1);
+            return acc + (itemPrice * piecesCount / traineesCount);
+          }, 0);
+        }
+
+        if (salary > 0) {
+          await firestoreService.add('expenses', {
+            title: `راتب ${member.name} - ${salaryMonth}`,
+            amount: salary,
+            category: 'salaries',
+            date: new Date().toISOString().split('T')[0],
+            created_by: user
+          });
+          total += salary;
+          count++;
+        }
       }
+
+      alert(`تم صرف الرواتب بنجاح. إجمالي الرواتب: ${total} شيكل لـ ${count} موظف.`);
+      setIsSalariesModalOpen(false);
     } catch (error) {
       console.error('Error recording salaries:', error);
       alert('حدث خطأ أثناء صرف الرواتب');
@@ -128,21 +154,13 @@ export default function Finance() {
 
   const totalExpenses = expenses.reduce((acc, curr: any) => acc + (curr.amount || 0), 0);
 
-  if (isLoading && !isRefreshing) return <div className="p-8 text-center">جاري التحميل...</div>;
+  if (isLoading) return <div className="p-8 text-center">جاري التحميل...</div>;
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-gray-900">المالية والمصاريف</h2>
         <div className="flex gap-2">
-          <button 
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-gray-100 rounded-lg transition-all disabled:opacity-50"
-            title="تحديث القائمة"
-          >
-            <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </button>
           <button 
             onClick={() => setIsSalariesModalOpen(true)}
             className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition-colors"

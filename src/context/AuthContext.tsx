@@ -1,15 +1,21 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { auth, db as firestore } from '../firebase';
+import { onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { firestoreService } from '@/services/firestoreService';
 
 interface AuthContextType {
   user: string | null;
   role: 'admin' | 'team' | 'trainee' | 'partner' | null;
-  userId: number | null;
+  userId: string | number | null;
   avatar: string | null;
   avatarIcon: string | null;
-  login: (username: string, role: 'admin' | 'team' | 'trainee' | 'partner', id?: number) => void;
+  login: (username: string, role: 'admin' | 'team' | 'trainee' | 'partner', id?: string | number) => void;
   logout: () => void;
   refreshProfile: () => Promise<void>;
+  firebaseUser: any;
+  loading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -21,37 +27,53 @@ export const MANAGERS = [
 ];
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<string | null>(() => {
-    return localStorage.getItem('studio_user');
-  });
-  const [role, setRole] = useState<'admin' | 'team' | 'trainee' | 'partner' | null>(() => {
-    return localStorage.getItem('studio_role') as 'admin' | 'team' | 'trainee' | 'partner' | null;
-  });
-  const [userId, setUserId] = useState<number | null>(() => {
+  const [user, setUser] = useState<string | null>(localStorage.getItem('studio_user'));
+  const [role, setRole] = useState<'admin' | 'team' | 'trainee' | 'partner' | null>(
+    localStorage.getItem('studio_role') as any
+  );
+  const [userId, setUserId] = useState<string | number | null>(() => {
     const id = localStorage.getItem('studio_user_id');
-    return id ? parseInt(id) : null;
+    return id ? (isNaN(Number(id)) ? id : parseInt(id)) : null;
   });
   const [avatar, setAvatar] = useState<string | null>(null);
   const [avatarIcon, setAvatarIcon] = useState<string | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    if (!user && location.pathname !== '/login') {
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (fUser) => {
+      setFirebaseUser(fUser);
+      setLoading(false);
+    }, (error) => {
+      console.error("Auth state change error:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!loading && !user && location.pathname !== '/login') {
       navigate('/login');
     }
     if (userId) {
       refreshProfile();
     }
-  }, [user, location.pathname, userId]);
+  }, [user, location.pathname, userId, loading]);
 
   const refreshProfile = async () => {
     if (!userId) return;
     try {
-      const res = await fetch(`/api/team/${userId}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await firestoreService.getById('team', userId.toString()) as any;
+      if (data) {
         setAvatar(data.avatar || null);
         setAvatarIcon(data.avatar_icon || null);
       }
@@ -60,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const login = (username: string, role: 'admin' | 'team' | 'trainee' | 'partner', id?: number) => {
+  const login = (username: string, role: 'admin' | 'team' | 'trainee' | 'partner', id?: string | number) => {
     setUser(username);
     setRole(role);
     if (id) setUserId(id);
@@ -78,7 +100,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await signOut(auth);
     setUser(null);
     setRole(null);
     setUserId(null);
@@ -93,8 +116,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, role, userId, avatar, avatarIcon, login, logout, refreshProfile }}>
-      {children}
+    <AuthContext.Provider value={{ user, role, userId, avatar, avatarIcon, login, logout, refreshProfile, firebaseUser, loading }}>
+      {!loading && children}
     </AuthContext.Provider>
   );
 }

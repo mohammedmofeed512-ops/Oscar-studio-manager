@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FileText, TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function FinancialHistory() {
   const [history, setHistory] = useState<any[]>([]);
@@ -12,11 +13,10 @@ export default function FinancialHistory() {
 
   const fetchHistory = async () => {
     try {
-      const res = await fetch('/api/goals-history');
-      if (res.ok) {
-        const data = await res.json();
-        setHistory(data);
-      }
+      const data = await firestoreService.getAll('goals');
+      // Sort by month descending
+      const sortedData = data.sort((a: any, b: any) => b.month.localeCompare(a.month));
+      setHistory(sortedData);
     } catch (error) {
       console.error('Failed to fetch history');
     }

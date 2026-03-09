@@ -6,15 +6,16 @@ import { useAuth } from '@/context/AuthContext';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Toast from '@/components/Toast';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function Projects() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [projects, setProjects] = useState([]);
+  const [projects, setProjects] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [filter, setFilter] = useState('all');
   const [viewMode, setViewMode] = useState<'grid' | 'timeline'>('grid');
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -35,54 +36,43 @@ export default function Projects() {
   });
 
   useEffect(() => {
-    fetchProjects();
-    fetchPartners();
-    fetchTeam();
+    const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+      setProjects(data);
+      setIsLoading(false);
+    });
+    
+    const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+      setTeam(data);
+      setPartners(data.filter((m: any) => m.type === 'partner'));
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeTeam();
+    };
   }, []);
 
   const fetchPartners = async () => {
-    try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
-      setPartners(data.filter((m: any) => m.type === 'partner'));
-    } catch (error) {
-      console.error('Error fetching partners:', error);
-    }
+    // Handled by subscribe
   };
 
   const fetchTeam = async () => {
-    try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
-      setTeam(data);
-    } catch (error) {
-      console.error('Error fetching team:', error);
-    }
+    // Handled by subscribe
   };
 
   const fetchProjects = async () => {
-    setIsLoading(true);
-    try {
-      const res = await fetch('/api/projects');
-      const data = await res.json();
-      setProjects(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error('Error fetching projects:', error);
-      setToast({ message: 'حدث خطأ أثناء تحميل المشاريع', type: 'error' });
-    } finally {
-      setIsLoading(false);
-    }
+    // Handled by subscribe
   };
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await fetchProjects();
+    // Refreshing is handled by real-time subscription, but we can re-fetch if needed
     setIsRefreshing(false);
   };
 
-  const handleDelete = (e: React.MouseEvent, id: number) => {
+  const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     setDeleteId(id);
     setIsDeleteModalOpen(true);
@@ -91,13 +81,8 @@ export default function Projects() {
   const confirmDelete = async () => {
     if (deleteId) {
       try {
-        const res = await fetch(`/api/projects/${deleteId}`, { method: 'DELETE' });
-        if (res.ok) {
-          setToast({ message: 'تم حذف المشروع بنجاح', type: 'success' });
-          fetchProjects();
-        } else {
-          throw new Error('Delete failed');
-        }
+        await firestoreService.delete('projects', deleteId);
+        setToast({ message: 'تم حذف المشروع بنجاح', type: 'success' });
       } catch (error) {
         console.error('Error deleting project:', error);
         setToast({ message: 'حدث خطأ أثناء حذف المشروع', type: 'error' });
@@ -110,32 +95,22 @@ export default function Projects() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newProject, created_by: user })
+      await firestoreService.add('projects', { ...newProject, created_by: user, status: 'pending' });
+      setToast({ message: 'تم إضافة المشروع بنجاح', type: 'success' });
+      setIsModalOpen(false);
+      setNewProject({
+        title: '',
+        type: 'wedding',
+        category: 'piecework',
+        client: '',
+        date: '',
+        budget: '',
+        description: '',
+        partner_id: '',
+        account_manager_id: '',
+        partner_policy: '',
+        partner_package: ''
       });
-
-      if (res.ok) {
-        setToast({ message: 'تم إضافة المشروع بنجاح', type: 'success' });
-        setIsModalOpen(false);
-        setNewProject({
-          title: '',
-          type: 'wedding',
-          category: 'piecework',
-          client: '',
-          date: '',
-          budget: '',
-          description: '',
-          partner_id: '',
-          account_manager_id: '',
-          partner_policy: '',
-          partner_package: ''
-        });
-        fetchProjects();
-      } else {
-        throw new Error('Create failed');
-      }
     } catch (error) {
       console.error('Error creating project:', error);
       setToast({ message: 'حدث خطأ أثناء إضافة المشروع', type: 'error' });

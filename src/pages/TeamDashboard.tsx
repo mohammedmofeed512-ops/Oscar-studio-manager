@@ -4,78 +4,71 @@ import { CheckCircle, Clock, AlertCircle, Calendar, Briefcase, CheckSquare, Star
 import { cn } from '@/lib/utils';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function TeamDashboard() {
   const { user, userId, role } = useAuth();
-  const [tasks, setTasks] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [evaluations, setEvaluations] = useState([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [evaluations, setEvaluations] = useState<any[]>([]);
   const [profile, setProfile] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (userId) {
-      fetchData();
-      fetchProfile();
+      const unsubscribeTeam = firestoreService.subscribe('team', (data) => {
+        const myProfile = data.find((m: any) => m.id === userId);
+        setProfile(myProfile);
+      });
+
+      const unsubscribeTasks = firestoreService.subscribe('tasks', (data) => {
+        const myTasks = data.filter((t: any) => {
+          if (t.assigned_to === userId) return true;
+          try {
+            if (t.participating_trainees) {
+              const trainees = JSON.parse(t.participating_trainees);
+              if (Array.isArray(trainees) && trainees.includes(userId)) {
+                return true;
+              }
+            }
+          } catch(e) {}
+          return false;
+        });
+        setTasks(myTasks);
+      });
+
+      const unsubscribeProjects = firestoreService.subscribe('projects', (data) => {
+        setProjects(data);
+      });
+
+      fetchEvaluations();
+
+      return () => {
+        unsubscribeTeam();
+        unsubscribeTasks();
+        unsubscribeProjects();
+      };
     }
   }, [userId, role]);
 
-  const fetchProfile = async () => {
+  const fetchEvaluations = async () => {
+    if (!userId) return;
     try {
-      const res = await fetch(`/api/team/${userId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setProfile(data);
-      }
+      const evals = await firestoreService.getSubAll('team', userId, 'evaluations');
+      setEvaluations(evals);
+      setIsLoading(false);
     } catch (err) {
-      console.error('Error fetching profile:', err);
+      console.error('Error fetching evaluations:', err);
+      setIsLoading(false);
     }
   };
 
   const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      const evaluationEndpoint = role === 'trainee' 
-        ? `/api/trainee-evaluations/${userId}` 
-        : `/api/evaluations/${userId}`;
+    // Handled by subscribe
+  };
 
-      const [tasksRes, projectsRes, evaluationsRes] = await Promise.all([
-        fetch('/api/tasks'),
-        fetch('/api/projects'),
-        fetch(evaluationEndpoint)
-      ]);
-      
-      const allTasks = await tasksRes.json();
-      const allProjects = await projectsRes.json();
-      const myEvaluations = await evaluationsRes.json();
-
-      setEvaluations(myEvaluations);
-
-      // Filter tasks for the logged-in user
-      const myTasks = allTasks.filter((t: any) => {
-        if (t.assigned_to === userId) return true;
-        try {
-          if (t.participating_trainees) {
-            const trainees = JSON.parse(t.participating_trainees);
-            if (Array.isArray(trainees) && trainees.includes(userId)) {
-              return true;
-            }
-          }
-        } catch(e) {}
-        return false;
-      });
-      setTasks(myTasks);
-
-      // Filter projects the user is involved in (has tasks in)
-      const myProjectIds = new Set(myTasks.map((t: any) => t.project_id).filter(Boolean));
-      const myProjects = allProjects.filter((p: any) => myProjectIds.has(p.id));
-      setProjects(myProjects);
-
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setIsLoading(false);
-    }
+  const fetchProfile = async () => {
+    // Handled by subscribe
   };
 
   const toggleTaskStatus = async (task: any) => {
@@ -84,24 +77,10 @@ export default function TeamDashboard() {
     else if (task.status === 'failed') newStatus = 'deferred';
     else if (task.status === 'deferred') newStatus = 'todo';
 
-    // Optimistic update
-    setTasks(tasks.map((t: any) => t.id === task.id ? { ...t, status: newStatus } : t));
-
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...task, status: newStatus })
-      });
-      
-      if (!res.ok) {
-        // Revert on failure
-        setTasks(tasks.map((t: any) => t.id === task.id ? { ...t, status: task.status } : t));
-      }
+      await firestoreService.update('tasks', task.id, { ...task, status: newStatus });
     } catch (error) {
       console.error('Error updating task:', error);
-      // Revert on failure
-      setTasks(tasks.map((t: any) => t.id === task.id ? { ...t, status: task.status } : t));
     }
   };
 
@@ -116,8 +95,12 @@ export default function TeamDashboard() {
 
   if (isLoading) return <LoadingSpinner />;
 
-  const pendingTasks = tasks.filter((t: any) => t.status !== 'done').length;
-  const completedTasks = tasks.filter((t: any) => t.status === 'done').length;
+      // Filter projects the user is involved in (has tasks in)
+      const myProjectIds = new Set(tasks.map((t: any) => t.project_id).filter(Boolean));
+      const myProjects = projects.filter((p: any) => myProjectIds.has(p.id));
+
+      const pendingTasks = tasks.filter((t: any) => t.status !== 'done').length;
+      const completedTasks = tasks.filter((t: any) => t.status === 'done').length;
 
   const getLevelLabel = (type: string) => {
     switch (type) {

@@ -5,9 +5,10 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmationModal from '@/components/ConfirmationModal';
 import { format } from 'date-fns';
+import { firestoreService } from '@/services/firestoreService';
 
 export default function ProjectDetails() {
-  const { id } = useParams();
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [project, setProject] = useState<any>(null);
@@ -37,17 +38,18 @@ export default function ProjectDetails() {
   const [team, setTeam] = useState<any[]>([]);
 
   useEffect(() => {
-    fetchProject();
-    fetchUpdates();
-    fetchItems();
-    fetchPartners();
-    fetchTeam();
+    if (id) {
+      fetchProject();
+      fetchUpdates();
+      fetchItems();
+      fetchPartners();
+      fetchTeam();
+    }
   }, [id]);
 
   const fetchPartners = async () => {
     try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
+      const data = await firestoreService.getAll('team');
       setPartners(data.filter((m: any) => m.type === 'partner'));
     } catch (error) {
       console.error('Error fetching partners:', error);
@@ -56,8 +58,7 @@ export default function ProjectDetails() {
 
   const fetchTeam = async () => {
     try {
-      const res = await fetch('/api/team');
-      const data = await res.json();
+      const data = await firestoreService.getAll('team');
       setTeam(data);
     } catch (error) {
       console.error('Error fetching team:', error);
@@ -65,12 +66,12 @@ export default function ProjectDetails() {
   };
 
   const fetchProject = async () => {
+    if (!id) return;
     try {
-      const res = await fetch(`/api/projects/${id}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await firestoreService.getById('projects', id);
+      if (data) {
         setProject(data);
-        setFormData(data);
+        setFormData(data as any);
       } else {
         navigate('/projects');
       }
@@ -82,24 +83,20 @@ export default function ProjectDetails() {
   };
 
   const fetchItems = async () => {
+    if (!id) return;
     try {
-      const res = await fetch(`/api/projects/${id}/items`);
-      if (res.ok) {
-        const data = await res.json();
-        setItems(data);
-      }
+      const data = await firestoreService.getSubAll('projects', id, 'items');
+      setItems(data);
     } catch (error) {
       console.error('Failed to fetch items');
     }
   };
 
   const fetchUpdates = async () => {
+    if (!id) return;
     try {
-      const res = await fetch(`/api/projects/${id}/updates`);
-      if (res.ok) {
-        const data = await res.json();
-        setUpdates(data);
-      }
+      const data = await firestoreService.getSubAll('projects', id, 'updates');
+      setUpdates(data);
     } catch (error) {
       console.error('Failed to fetch updates');
     }
@@ -107,19 +104,15 @@ export default function ProjectDetails() {
 
   const handleAddUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUpdate.trim()) return;
+    if (!newUpdate.trim() || !id) return;
 
     try {
-      const res = await fetch(`/api/projects/${id}/updates`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: newUpdate, created_by: user })
+      await firestoreService.addSub('projects', id, 'updates', {
+        content: newUpdate,
+        created_by: user
       });
-
-      if (res.ok) {
-        setNewUpdate('');
-        fetchUpdates();
-      }
+      setNewUpdate('');
+      fetchUpdates();
     } catch (error) {
       console.error('Failed to add update');
     }
@@ -127,50 +120,38 @@ export default function ProjectDetails() {
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch(`/api/projects/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
-    });
+    if (!id) return;
+    await firestoreService.update('projects', id, formData);
     setIsEditing(false);
     fetchProject();
   };
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItem.name.trim()) return;
+    if (!newItem.name.trim() || !id) return;
 
     try {
-      const res = await fetch(`/api/projects/${id}/items`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newItem, is_paid: 0 })
+      await firestoreService.addSub('projects', id, 'items', {
+        ...newItem,
+        price: Number(newItem.price) || 0,
+        is_paid: false
       });
-
-      if (res.ok) {
-        setNewItem({ name: '', price: '' });
-        fetchItems();
-      }
+      setNewItem({ name: '', price: '' });
+      fetchItems();
     } catch (error) {
       console.error('Failed to add item');
     }
   };
 
   const toggleItemPaid = async (item: any) => {
+    if (!id) return;
     // Optimistic update
     setItems(items.map((i: any) => i.id === item.id ? { ...i, is_paid: !i.is_paid } : i));
 
     try {
-      const res = await fetch(`/api/project-items/${item.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...item, is_paid: !item.is_paid })
+      await firestoreService.updateSub('projects', id, 'items', item.id, {
+        is_paid: !item.is_paid
       });
-
-      if (!res.ok) {
-        // Revert on failure
-        setItems(items.map((i: any) => i.id === item.id ? { ...i, is_paid: item.is_paid } : i));
-      }
     } catch (error) {
       console.error('Failed to toggle item payment');
       // Revert on failure
@@ -178,12 +159,11 @@ export default function ProjectDetails() {
     }
   };
 
-  const deleteItem = async (itemId: number) => {
+  const deleteItem = async (itemId: string) => {
+    if (!id) return;
     try {
-      const res = await fetch(`/api/project-items/${itemId}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchItems();
-      }
+      await firestoreService.deleteSub('projects', id, 'items', itemId);
+      fetchItems();
     } catch (error) {
       console.error('Failed to delete item');
     }
@@ -194,13 +174,15 @@ export default function ProjectDetails() {
   };
 
   const confirmDelete = async () => {
-    await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+    if (!id) return;
+    await firestoreService.delete('projects', id);
     navigate('/projects');
   };
 
   const [showSaveToast, setShowSaveToast] = useState(false);
 
   const handleGlobalSave = async () => {
+    if (!id) return;
     try {
       // 1. Calculate totals from items
       const totalBudget = items.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
@@ -212,21 +194,15 @@ export default function ProjectDetails() {
       else if (somePaid) paymentStatus = 'partially_paid';
 
       // 2. Update project with new budget and payment status
-      const res = await fetch(`/api/projects/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          budget: totalBudget,
-          payment_status: paymentStatus
-        })
+      await firestoreService.update('projects', id, {
+        ...formData,
+        budget: totalBudget,
+        payment_status: paymentStatus
       });
 
-      if (res.ok) {
-        setShowSaveToast(true);
-        setTimeout(() => setShowSaveToast(false), 3000);
-        fetchProject();
-      }
+      setShowSaveToast(true);
+      setTimeout(() => setShowSaveToast(false), 3000);
+      fetchProject();
     } catch (error) {
       console.error('Failed to save project actions');
     }
